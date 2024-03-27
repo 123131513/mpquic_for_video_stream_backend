@@ -1125,7 +1125,7 @@ func (sch *scheduler) selectFirstPath(s *session, hasRetransmission bool, hasStr
 
 // Lock of s.paths must be held
 func (sch *scheduler) selectPath(s *session, hasRetransmission bool, hasStreamRetransmission bool, fromPth *path) *path {
-	fmt.Println("Selecting path")
+	//fmt.Println("Selecting path")
 	switch s.config.Scheduler {
 	case constants.SCHEDULER_ROUND_ROBIN:
 		return sch.selectPathRoundRobin(s, hasRetransmission, hasStreamRetransmission, fromPth)
