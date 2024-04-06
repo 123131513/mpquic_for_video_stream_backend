@@ -12,6 +12,7 @@ import (
 	"gonum.org/v1/gonum/mat"
 
 	"github.com/mutdroco/mpquic_for_video_stream_backend/ackhandler"
+	"github.com/mutdroco/mpquic_for_video_stream_backend/congestion"
 	"github.com/mutdroco/mpquic_for_video_stream_backend/constants"
 	"github.com/mutdroco/mpquic_for_video_stream_backend/internal/protocol"
 	"github.com/mutdroco/mpquic_for_video_stream_backend/internal/utils"
@@ -21,6 +22,26 @@ import (
 
 const banditAlpha = 0.75
 const banditDimension = 6
+
+// zzh: begin from ytxing's code
+// PacketList ytxing
+type PacketList struct {
+	queue    []*packedFrames //ytxing: some frames are supposed to be a packet but not sealed.
+	len      int             // ytxing: how many packet
+	toPathid protocol.PathID
+}
+
+type packedFrames struct {
+	frames    []wire.Frame //ytxing: a slice of a slice of frames.
+	queueTime time.Time
+}
+
+// GetPathSmoothedRTT get smoothed RTT in time.Duration
+// ytxing
+func GetPathSmoothedRTT(pth *path) time.Duration {
+	return pth.rttStats.SmoothedRTT()
+
+}
 
 type scheduler struct {
 	// XXX Currently round-robin based, inspired from MPTCP scheduler
@@ -70,6 +91,10 @@ type scheduler struct {
 
 	// pathID Queue for Round Robin
 	pathQueue queue.Queue
+
+	// zzh: add buffer for packets
+	packetsNotSentYet map[protocol.PathID]*PacketList       //ytxing
+	previousPath      map[protocol.StreamID]protocol.PathID //ytxing: used to calculate arrival time
 }
 
 type queuePathIdItem struct {
@@ -114,6 +139,10 @@ func (sch *scheduler) setup() {
 	//TODO: expose to config
 	sch.DumpPath = "/tmp/"
 	sch.dumpAgent.Setup()
+
+	// zzh: add buffer for packets
+	sch.packetsNotSentYet = make(map[protocol.PathID]*PacketList)
+	sch.previousPath = make(map[protocol.StreamID]protocol.PathID)
 }
 
 func (sch *scheduler) getRetransmission(s *session) (hasRetransmission bool, retransmitPacket *ackhandler.Packet, pth *path) {
@@ -1143,6 +1172,9 @@ func (sch *scheduler) selectPath(s *session, hasRetransmission bool, hasStreamRe
 		return sch.selectPathPeek(s, hasRetransmission, hasStreamRetransmission, fromPth)
 	case constants.SCHEDULER_RANDOM:
 		return sch.selectPathRandom(s, hasRetransmission, hasStreamRetransmission, fromPth)
+	// zzh: add new scheduler
+	case constants.SCHEDULER_ARRIVAL_TIME:
+		return sch.mySelectPathByArrivalTime(s, hasRetransmission, hasStreamRetransmission, fromPth)
 	default:
 		return sch.selectPathRoundRobin(s, hasRetransmission, hasStreamRetransmission, fromPth)
 	}
@@ -1412,4 +1444,262 @@ func PrintSchedulerInfo(config *Config) {
 		fmt.Printf("Invalid Multipath Scheduler selected, defaulting to %s\n Available schedulers: %s\n",
 			constants.SCHEDULER_ROUND_ROBIN, schedulerList)
 	}
+}
+
+// zzh: begin from ytxing's code
+/*
+	ytxing:	Here we got a specific stream selected by myChooseStream, and
+
+/			we choose a path with shortest packet arrival time.
+/			Calculate pkt arrival time by assuming that the next packet is
+/			of the maxSize.
+*/
+func (sch *scheduler) mySelectPathByArrivalTime(s *session, hasRetransmission bool, hasStreamRetransmission bool, fromPth *path) (selectedPath *path) {
+	utils.Debugf("ytxing: mySelectPathByArrivalTime() IN\n")
+	defer utils.Debugf("ytxing:  mySelectPathByArrivalTime() OUT\n")
+	// if s.perspective == protocol.PerspectiveClient {
+	// 	//zzh: why client always use the path with minRTT
+	// 	utils.Debugf("ytxing: I am client, use minRTT\n")
+	// 	return sch.selectPathLowLatency(s, hasRetransmission, hasStreamRetransmission, fromPth)
+	// }
+	// XXX Avoid using PathID 0 if there is more than 1 path
+	if len(s.paths) <= 1 {
+		if !s.paths[protocol.InitialPathID].SendingAllowed() {
+			return nil
+		}
+		selectedPath = s.paths[protocol.InitialPathID]
+		return selectedPath
+	}
+	// FIXME Only works at the beginning... Cope with new paths during the connection
+	if hasRetransmission && hasStreamRetransmission && fromPth.rttStats.SmoothedRTT() == 0 {
+		// Is there any other path with a lower number of packet sent?
+		currentQuota := sch.quotas[fromPth.pathID]
+		for pathID, pth := range s.paths {
+			if pathID == protocol.InitialPathID || pathID == fromPth.pathID {
+				continue
+			}
+			// The congestion window was checked when duplicating the packet
+			if sch.quotas[pathID] < currentQuota {
+				utils.Debugf("ytxing: Strange return path %v\n", pth.pathID)
+				return pth
+			}
+		}
+	}
+
+	// zzh: not necessary
+	// for _, pth := range s.paths {
+	// 	if pth != nil && !sch.sendingQueueEmpty(pth) {
+	// 		if pth.SendingAllowed() {
+	// 			// utils.Debugf("ytxing: when selecting path, find path %v can send some stored frames\n", pathID)
+	// 			return pth
+	// 		}
+	// 		// utils.Debugf("ytxing: when selecting path, find path %v can send some stored frames but blocked\n", pathID)
+	// 	}
+	// }
+	// var currentRTT time.Duration
+	var currentArrivalTime time.Duration
+	var lowerArrivalTime time.Duration
+	selectedPathID := protocol.PathID(255)
+	// zzh: use all paths
+	var allCwndLimited bool = false
+
+	//find the best path, including that is limited by SendingAllowed()
+pathLoop:
+	for pathID, pth := range s.paths {
+
+		// If this path is potentially failed, do not consider it for sending
+		if pth.potentiallyFailed.Get() {
+			// utils.Debugf("ytxing: path %v pth.potentiallyFailed.Get(), pass it", pathID)
+			continue pathLoop
+		}
+
+		// XXX Prevent using initial pathID if multiple paths
+		if pathID == protocol.InitialPathID {
+			// utils.Debugf("ytxing: path %v pathID == protocol.InitialPathID, pass it", pathID)
+			continue pathLoop
+		}
+
+		//ytxing: return nil if all paths are limited by cwnd
+		allCwndLimited = allCwndLimited && (!hasRetransmission && !pth.SendingAllowed())
+
+		// currentRTT = pth.rttStats.SmoothedRTT() //ytxing: if SmoothedRTT == 0, send on it. Because it will be duplicated to other paths. TODO maybe not?
+		// currentArrivalTime, _ = sch.calculateArrivalTime(s, pth, false)
+		currentArrivalTime, _ = sch.calculateArrivalTime(s, pth, false)
+		// currentArrivalTime = pth.rttStats.SmoothedRTT()
+
+		// Prefer staying single-path if not blocked by current path
+		// Don't consider this sample if the smoothed RTT is 0
+		if lowerArrivalTime != 0 && currentArrivalTime == 0 {
+			continue pathLoop
+		}
+
+		// Case if we have multiple paths unprobed
+		//ytxing: currentArrivalTime == 0 means rtt == 0
+		if currentArrivalTime == 0 {
+			currentQuota, ok := sch.quotas[pathID]
+			if !ok {
+				sch.quotas[pathID] = 0
+				currentQuota = 0
+			}
+			lowerQuota, _ := sch.quotas[selectedPathID]
+			utils.Debugf("ytxing: pathID %v, currentArrivalTime 0, currentQuota %v, selectedPathID %v, lowerQuota %v", pathID, currentQuota, selectedPathID, lowerQuota)
+			if selectedPath != nil && currentQuota > lowerQuota {
+				continue pathLoop
+			}
+		}
+
+		if currentArrivalTime != 0 && lowerArrivalTime != 0 && selectedPath != nil && currentArrivalTime >= lowerArrivalTime { //ytxing: right?
+			continue pathLoop
+		}
+
+		// Update
+		lowerArrivalTime = currentArrivalTime
+		selectedPath = pth
+		selectedPathID = pathID
+	}
+	if allCwndLimited {
+		utils.Debugf("ytxing: All paths are cwnd limited, block scheduling, return nil\n")
+		return nil
+	}
+	return selectedPath //zy changes
+	/*
+		 zy already return
+			var currestNode *node
+			if s.streamScheduler.toSend == nil {
+				utils.Debugf("ytxing: s.streamScheduler.toSend == nil\n")
+				currestNode = s.streamScheduler.wrrSchedule() //ytxing: stupified!
+				s.streamScheduler.toSend = currestNode
+			} else {
+				utils.Debugf("ytxing: s.streamScheduler.toSend != nil\n")
+				currestNode = s.streamScheduler.toSend
+			}
+			//ytxing: TODO maybe some more checks
+			if currestNode == nil {
+				utils.Debugf("ytxing: currestStream == nil, seems to be crypto stream 1, find a minrtt path\n")
+				return selectedPath
+			}
+			currestStream := currestNode.stream
+			// if currestStream.lenOfDataForWriting() == 0 {
+			// 	utils.Debugf("ytxing: Stream %d has no data for writing\n", currestStream.streamID)
+			// 	// return nil
+			// }
+
+			//ytxing: case that the stream was previously sent on another path
+			previousPathID, ok := sch.previousPath[currestStream.streamID]
+			previousPath := s.paths[previousPathID]
+			if ok && selectedPathID != previousPathID && previousPath != nil && selectedPath != nil {
+				arrivalTimeOnPreviousPath, _ := sch.calculateArrivalTime(s, previousPath, false)
+				currentArrivalTimeaddMeanDeviation, _ := sch.calculateArrivalTime(s, selectedPath, true)
+				if arrivalTimeOnPreviousPath < currentArrivalTimeaddMeanDeviation {
+					utils.Debugf("ytxing: current path%d -> previous path%d because of rtt jitter\n", selectedPathID, previousPath.pathID)
+					utils.Debugf("ytxing: arrivalTimeOnPreviousPath %v, currentArrivalTimeaddMeanDeviation %v\n", arrivalTimeOnPreviousPath, currentArrivalTimeaddMeanDeviation)
+					selectedPath = previousPath
+				}
+			}
+
+			utils.Debugf("ytxing: selectedPathID %v sendingallow == %v\n", selectedPath.pathID, selectedPath.SendingAllowed())
+			sch.previousPath[currestStream.streamID] = selectedPath.pathID
+			return selectedPath
+	*/
+}
+
+func (sch *scheduler) queueFrames(frames []wire.Frame, pth *path) {
+	if sch.packetsNotSentYet[pth.pathID] == nil {
+		sch.packetsNotSentYet[pth.pathID] = &PacketList{
+			queue:    make([]*packedFrames, 0),
+			len:      0,
+			toPathid: pth.pathID,
+		}
+	}
+	packetList := sch.packetsNotSentYet[pth.pathID]
+	packetList.queue = append(packetList.queue, &packedFrames{frames, time.Now()})
+	packetList.len += 1
+
+	utils.Debugf("ytxing: queueFrames in path %d, total len %v len(list.queue) %v\n", pth.pathID, packetList.len, len(packetList.queue))
+}
+
+func (sch *scheduler) dequeueStoredFrames(pth *path) []wire.Frame {
+	//TODO
+	packetList := sch.packetsNotSentYet[pth.pathID]
+	if len(packetList.queue) == 0 {
+		return nil
+	}
+	packet := packetList.queue[0]
+	// Shift the slice and don't retain anything that isn't needed.
+	copy(packetList.queue, packetList.queue[1:])
+	packetList.queue[len(packetList.queue)-1] = nil
+	packetList.queue = packetList.queue[:len(packetList.queue)-1]
+	// Update statistics
+	packetList.len -= 1
+	utils.Debugf("ytxing: dequeueStoredFrames in path %d, total len %v len(list.queue) %v \n", pth.pathID, packetList.len, len(packetList.queue))
+	utils.Debugf("ytxing: this frame is queued for %v \n", time.Now().Sub(packet.queueTime))
+	return packet.frames
+}
+
+func (sch *scheduler) sendingQueueEmpty(pth *path) bool {
+	if sch.packetsNotSentYet[pth.pathID] == nil {
+		sch.packetsNotSentYet[pth.pathID] = &PacketList{
+			queue:    make([]*packedFrames, 0),
+			len:      0,
+			toPathid: pth.pathID,
+		}
+	}
+	return len(sch.packetsNotSentYet[pth.pathID].queue) == 0
+}
+
+func (sch *scheduler) allSendingQueueEmpty() bool {
+
+	for _, list := range sch.packetsNotSentYet {
+		if len(list.queue) != 0 {
+			return false
+		}
+	}
+	utils.Debugf("ytxing: allSendingQueueEmpty\n")
+	return true
+}
+
+func (sch *scheduler) dequeueStoredFramesFromOthers(pth *path) []wire.Frame {
+	//TODO
+	for pathID, list := range sch.packetsNotSentYet {
+		if len(list.queue) != 0 {
+			return sch.dequeueStoredFrames(pth.sess.paths[pathID])
+		}
+	}
+	return nil
+}
+
+func (sch *scheduler) calculateArrivalTime(s *session, pth *path, addMeanDeviation bool) (time.Duration, bool) {
+
+	packetSize := protocol.MaxPacketSize * 8               //bit uint64
+	pthBwd := congestion.Bandwidth(pth.GetPathBandwidth()) // bit per second uint64
+	utils.Debugf("ytxing: GetPathBandwidth() path %v bwd %v mbps", pth.pathID, pthBwd/1e6)
+	inSecond := uint64(time.Second)
+	var rtt time.Duration
+	if addMeanDeviation {
+		rtt = pth.rttStats.SmoothedRTT() + pth.rttStats.MeanDeviation()
+		utils.Debugf("ytxing: addMeanDeviation path %d, rtt = rtt%v + MD%v", pth.pathID, pth.rttStats.SmoothedRTT(), pth.rttStats.MeanDeviation())
+	} else {
+		rtt = pth.rttStats.SmoothedRTT()
+
+	}
+	if pthBwd == 0 {
+		utils.Debugf("ytxing: bandwidth of path %v is nil, arrivalTime == rtt/2 %v \n", pth.pathID, rtt/2)
+		return rtt / 2, false
+	}
+	if rtt == 0 {
+		utils.Debugf("ytxing: rtt of path%d is nil, arrivalTime == 0\n", pth.pathID)
+		return 0, true
+	}
+	writeQueue, ok := sch.packetsNotSentYet[pth.pathID]
+	var writeQueueSize protocol.ByteCount
+	if !ok {
+		writeQueueSize = 0
+	} else {
+		writeQueueSize = protocol.ByteCount(writeQueue.len) * protocol.DefaultTCPMSS * 8 //in bit
+		//protocol.DefaultTCPMSS MaxPacketSize
+	}
+
+	arrivalTime := (uint64(packetSize+writeQueueSize)*inSecond)/uint64(pthBwd) + uint64(rtt)/2 //in nanosecond
+	utils.Debugf("ytxing: arrivalTime of path %d is %v ms writeQueueSize %v bytes, pthBwd %v byte p s, rtt %v\n", pth.pathID, time.Duration(arrivalTime), writeQueueSize/8, pthBwd/8, rtt)
+	return time.Duration(arrivalTime), true
 }

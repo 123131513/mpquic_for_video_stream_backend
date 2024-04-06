@@ -10,4 +10,6 @@ const (
 	SCHEDULER_BLEST       = "blest"
 	SCHEDULER_DQNA        = "dqnAgent"
 	SCHEDULER_FIRST_PATH  = "first_path"
+	// zzh: add new scheduler
+	SCHEDULER_ARRIVAL_TIME = "arrive_time"
 )

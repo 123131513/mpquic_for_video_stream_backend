@@ -131,6 +131,18 @@ func (p *path) GetStopWaitingFrame(force bool) *wire.StopWaitingFrame {
 	return p.sentPacketHandler.GetStopWaitingFrame(force)
 }
 
+// zzh: begin from ytxing's code
+// ytxing: in bit per second
+func (p *path) GetPathBandwidth() protocol.ByteCount {
+
+	utils.Debugf("ytxing: GetPathBandwidth() path %v: cwnd %v, rtt %v ", p.pathID, p.sentPacketHandler.GetCongestionWindow(), p.rttStats.SmoothedRTT())
+	if p.rttStats.SmoothedRTT() == 0 {
+		return 0
+	}
+	return (p.sentPacketHandler.GetCongestionWindow() * protocol.ByteCount(time.Second) * protocol.ByteCount(congestion.BytesPerSecond)) / protocol.ByteCount(p.rttStats.SmoothedRTT()) //byte -> bit
+
+}
+
 func (p *path) GetAckFrame() *wire.AckFrame {
 	ack := p.receivedPacketHandler.GetAckFrame()
 	if ack != nil {
