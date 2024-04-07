@@ -1455,7 +1455,8 @@ func PrintSchedulerInfo(config *Config) {
 	// Scheduler Info
 	schedulerList := []string{constants.SCHEDULER_ROUND_ROBIN, constants.SCHEDULER_LOW_LATENCY,
 		constants.SCHEDULER_PEEKABOO, constants.SCHEDULER_ECF, constants.SCHEDULER_DQNA, constants.SCHEDULER_BLEST,
-		constants.SCHEDULER_FIRST_PATH, constants.SCHEDULER_LOW_BANDIT, constants.SCHEDULER_RANDOM}
+		constants.SCHEDULER_FIRST_PATH, constants.SCHEDULER_LOW_BANDIT, constants.SCHEDULER_RANDOM,
+		constants.SCHEDULER_ARRIVAL_TIME}
 	if config.Scheduler == "" {
 		fmt.Println("Using Default Multipath Scheduler: ", constants.SCHEDULER_ROUND_ROBIN)
 	} else if util.StringInSlice(schedulerList, config.Scheduler) {
@@ -1507,15 +1508,15 @@ func (sch *scheduler) mySelectPathByArrivalTime(s *session, hasRetransmission bo
 	}
 
 	// zzh: not necessary
-	// for _, pth := range s.paths {
-	// 	if pth != nil && !sch.sendingQueueEmpty(pth) {
-	// 		if pth.SendingAllowed() {
-	// 			// utils.Debugf("ytxing: when selecting path, find path %v can send some stored frames\n", pathID)
-	// 			return pth
-	// 		}
-	// 		// utils.Debugf("ytxing: when selecting path, find path %v can send some stored frames but blocked\n", pathID)
-	// 	}
-	// }
+	for _, pth := range s.paths {
+		if pth != nil && !sch.sendingQueueEmpty(pth) {
+			if pth.SendingAllowed() {
+				utils.Debugf("ytxing: when selecting path, find path %v can send some stored frames\n", pth.pathID)
+				return pth
+			}
+			utils.Debugf("ytxing: when selecting path, find path %v can send some stored frames but blocked\n", pth.pathID)
+		}
+	}
 	// var currentRTT time.Duration
 	var currentArrivalTime time.Duration
 	var lowerArrivalTime time.Duration

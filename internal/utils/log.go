@@ -80,6 +80,14 @@ func init() {
 }
 
 func readLoggingEnv() {
+	// 打开一个文件
+	file, err := os.OpenFile("debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// 设置log的输出到这个文件
+	log.SetOutput(file)
 	switch strings.ToLower(os.Getenv(logEnv)) {
 	case "":
 		return

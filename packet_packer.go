@@ -188,7 +188,8 @@ func (p *packetPacker) StoreFrames(s *session, pth *path) (bool, error) {
 // PackPacket packs a new packet
 // the other controlFrames are sent in the next packet, but might be queued and sent in the next packet if the packet would overflow MaxPacketSize otherwise
 func (p *packetPacker) PackPacketWithStoreFrames(pth *path) (*packedPacket, error) {
-
+	utils.Debugf("ytxing: PackPacketWithStoreFrames() IN\n")
+	defer utils.Debugf("ytxing:  PackPacketWithStoreFrames() OUT\n")
 	if p.streamFramer.HasCryptoStreamFrame() {
 		utils.Debugf("ytxing: HasCryptoStreamFrame")
 		return p.packCryptoPacket(pth) //ytxing if stream 1 has packets
@@ -266,7 +267,7 @@ func (p *packetPacker) PackPacket(pth *path) (*packedPacket, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.stopWaiting[pth.pathID] = nil //ytxing: test seems to be good?
+	// p.stopWaiting[pth.pathID] = nil //ytxing: test seems to be good?
 	if p.stopWaiting[pth.pathID] != nil {
 		p.stopWaiting[pth.pathID].PacketNumber = publicHeader.PacketNumber
 		p.stopWaiting[pth.pathID].PacketNumberLen = publicHeader.PacketNumberLen
