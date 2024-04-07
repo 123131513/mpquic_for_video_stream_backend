@@ -1331,7 +1331,11 @@ func (sch *scheduler) sendPacket(s *session) error {
 	}
 
 	// Repeatedly try sending until we don't have any more data, or run out of the congestion window
+	// ytxing: OR packetsNotSentYet is not empty! TODO
+	i := 0
 	for {
+		i++
+		utils.Debugf("ytxing: =========================loop of sendPacketOriginal() IN Round No.%d============================", i)
 		// We first check for retransmissions
 		hasRetransmission, retransmitHandshakePacket, fromPth := sch.getRetransmission(s)
 		// XXX There might still be some stream frames to be retransmitted
@@ -1341,6 +1345,14 @@ func (sch *scheduler) sendPacket(s *session) error {
 		s.pathsLock.RLock()
 		pth = sch.selectPath(s, hasRetransmission, hasStreamRetransmission, fromPth)
 		s.pathsLock.RUnlock()
+
+		// zzh: debug
+		s.pathsLock.RUnlock()
+		if pth != nil {
+			utils.Debugf("ytxing: send on path %v", pth.pathID)
+		} else {
+			utils.Debugf("ytxing: path nil!")
+		}
 
 		// XXX No more path available, should we have a new QUIC error message?
 		if pth == nil {
@@ -1356,6 +1368,7 @@ func (sch *scheduler) sendPacket(s *session) error {
 				return err
 			}
 			if err = s.sendPackedPacket(packet, pth); err != nil {
+				utils.Debugf("ytxing: sendPackedPacket, we have an handshake packet retransmission")
 				return err
 			}
 			continue
@@ -1390,7 +1403,8 @@ func (sch *scheduler) sendPacket(s *session) error {
 			s.packer.QueueControlFrame(pf, pth)
 		}
 
-		pkt, sent, err := sch.performPacketSending(s, windowUpdateFrames, pth)
+		// pkt, sent, err := sch.performPacketSending(s, windowUpdateFrames, pth)
+		pkt, sent, err := sch.performPacketSendingOfMine(s, windowUpdateFrames, pth) //ytxing: HERE!! finally send a pkt
 		if err != nil {
 			if err == ackhandler.ErrTooManyTrackedSentPackets {
 				utils.Errorf("Closing episode")
@@ -1398,6 +1412,12 @@ func (sch *scheduler) sendPacket(s *session) error {
 			return err
 		}
 		windowUpdateFrames = nil
+		// zzh: add debug
+		if sent && pkt == nil {
+			utils.Debugf("ytxing: sent && pkt == nil")
+			continue
+		}
+
 		if !sent {
 			// Prevent sending empty packets
 			return sch.ackRemainingPaths(s, windowUpdateFrames)
@@ -1702,4 +1722,91 @@ func (sch *scheduler) calculateArrivalTime(s *session, pth *path, addMeanDeviati
 	arrivalTime := (uint64(packetSize+writeQueueSize)*inSecond)/uint64(pthBwd) + uint64(rtt)/2 //in nanosecond
 	utils.Debugf("ytxing: arrivalTime of path %d is %v ms writeQueueSize %v bytes, pthBwd %v byte p s, rtt %v\n", pth.pathID, time.Duration(arrivalTime), writeQueueSize/8, pthBwd/8, rtt)
 	return time.Duration(arrivalTime), true
+}
+
+// Lock of s.paths must be free (in case of log print)
+// ytxing: we now choose a path to sent, but not
+func (sch *scheduler) performPacketSendingOfMine(s *session, windowUpdateFrames []*wire.WindowUpdateFrame, pth *path) (*ackhandler.Packet, bool, error) {
+	utils.Debugf("ytxing: performPacketSendingOfMine() IN")
+	defer utils.Debugf("ytxing: performPacketSendingOfMine() OUT")
+
+	var err error
+	var packet *packedPacket
+	if pth.sentPacketHandler.ShouldSendRetransmittablePacket() {
+		s.packer.QueueControlFrame(&wire.PingFrame{}, pth)
+	}
+	//ytxing START
+
+	if pth.SendingAllowed() && sch.sendingQueueEmpty(pth) { //normally
+		// packet, err = s.packer.PackPacket(s, pth)
+		packet, err = s.packer.PackPacket(pth) // zzh: don't need session, because we only have path not stream
+		utils.Debugf("ytxing: PackPacket()")
+		if err != nil || packet == nil {
+			return nil, false, err
+		}
+	} else if !pth.SendingAllowed() {
+		stored, err := s.packer.StoreFrames(s, pth) //ytxing //zzh: don't need session, because we only have path not stream
+		utils.Debugf("ytxing: path %v, !SendingAllowed() Stored!", pth.pathID)
+		if stored {
+			return nil, true, err //ytxing: here the "sent" bool is set to true, then the loop outside will not break
+		} else {
+			return nil, false, err //ytxing: here the "sent" bool is set to true, then the loop outside will not break
+		}
+	} else {
+		packet, err = s.packer.PackPacketWithStoreFrames(pth)
+		utils.Debugf("ytxing: PackPacketWithStoreFrames() path %v", pth.pathID)
+		if err != nil || packet == nil {
+			return nil, false, err
+		}
+	}
+	//ytxing END
+
+	// packet, err = s.packer.PackPacket(pth)
+	// if err != nil || packet == nil {
+	// 	return nil, false, err
+	// }
+	// original code
+
+	if err = s.sendPackedPacket(packet, pth); err != nil {
+		return nil, false, err
+	}
+	packets, retransmissions, losses := pth.sentPacketHandler.GetStatistics()
+	utils.Debugf("ytxing: after sendPackedPacket() path %v, packets %v retransmissions %v, losses %v", pth.pathID, packets, retransmissions, losses)
+
+	// send every window update twice
+	for _, f := range windowUpdateFrames {
+		s.packer.QueueControlFrame(f, pth)
+	}
+
+	// Packet sent, so update its quota
+	sch.quotas[pth.pathID]++
+
+	// Provide some logging if it is the last packet
+	for _, frame := range packet.frames {
+		switch frame := frame.(type) {
+		case *wire.StreamFrame:
+			if frame.FinBit {
+				// Last packet to send on the stream, print stats
+				s.pathsLock.RLock()
+				utils.Infof("Info for stream %x of %x", frame.StreamID, s.connectionID)
+				for pathID, pth := range s.paths {
+					sntPkts, sntRetrans, sntLost := pth.sentPacketHandler.GetStatistics()
+					rcvPkts := pth.receivedPacketHandler.GetStatistics()
+					utils.Infof("Path %x: sent %d retrans %d lost %d; rcv %d rtt %v", pathID, sntPkts, sntRetrans, sntLost, rcvPkts, pth.rttStats.SmoothedRTT())
+				}
+				s.pathsLock.RUnlock()
+			}
+		default:
+		}
+	}
+
+	pkt := &ackhandler.Packet{
+		PacketNumber:    packet.number,
+		Frames:          packet.frames,
+		Length:          protocol.ByteCount(len(packet.raw)),
+		EncryptionLevel: packet.encryptionLevel,
+	}
+
+	utils.Debugf("ytxing: Finally send pkt %v on path %v", pkt.PacketNumber, pth.pathID)
+	return pkt, true, nil
 }

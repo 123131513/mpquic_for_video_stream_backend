@@ -8,6 +8,7 @@ import (
 	"github.com/mutdroco/mpquic_for_video_stream_backend/ackhandler"
 	"github.com/mutdroco/mpquic_for_video_stream_backend/internal/handshake"
 	"github.com/mutdroco/mpquic_for_video_stream_backend/internal/protocol"
+	"github.com/mutdroco/mpquic_for_video_stream_backend/internal/utils"
 	"github.com/mutdroco/mpquic_for_video_stream_backend/internal/wire"
 )
 
@@ -122,6 +123,135 @@ func (p *packetPacker) PackHandshakeRetransmission(packet *ackhandler.Packet, pt
 	}, err
 }
 
+// zzh: begin from ytxing's code
+// ytxing: StoreFrames compose a packet but not actually Seal it. The frames are stored.
+// it can only be called when tha path is cwnd limited
+func (p *packetPacker) StoreFrames(s *session, pth *path) (bool, error) {
+
+	// if p.streamFramer.HasCryptoStreamFrame() {
+	// 	utils.Debugf("ytxing: HasCryptoStreamFrame")
+	// 	return p.packCryptoPacket(pth) //ytxing if stream 1 has packets
+	// } //ytxing: TODO! need to handle this in PackPacketWithStoredFrames
+
+	encLevel, sealer := p.cryptoSetup.GetSealer()
+
+	publicHeader := p.getPublicHeader(encLevel, pth)
+	publicHeaderLength, err := publicHeader.GetLength(p.perspective) //ytxing: max headerlen = 20
+	if err != nil {
+		return false, err
+	}
+
+	if p.stopWaiting[pth.pathID] != nil {
+		p.stopWaiting[pth.pathID].PacketNumber = publicHeader.PacketNumber
+		p.stopWaiting[pth.pathID].PacketNumberLen = publicHeader.PacketNumberLen
+	}
+
+	// TODO (QDC): rework this part with PING
+	var isPing bool
+	if len(p.controlFrames) > 0 {
+		_, isPing = p.controlFrames[0].(*wire.PingFrame)
+	}
+
+	var payloadFrames []wire.Frame
+	if isPing {
+		payloadFrames = []wire.Frame{p.controlFrames[0]}
+		// Remove the ping frame from the control frames
+		p.controlFrames = p.controlFrames[1:len(p.controlFrames)]
+	} else {
+		maxSize := protocol.MaxPacketSize - protocol.ByteCount(sealer.Overhead()) - publicHeaderLength //1326
+		//utils.Infof("maxSize%d", maxSize)
+		payloadFrames, err = p.composeNextPacket(maxSize, p.canSendData(encLevel), pth) //ytxing: HERE!!!!!!!!!
+		if err != nil {
+			return false, err
+		}
+	}
+
+	// Check if we have enough frames to send
+	if len(payloadFrames) == 0 {
+		//utils.Infof("len(payloadFrames) == 0")
+		return false, nil
+	}
+	// Don't send out packets that only contain a StopWaitingFrame
+	if len(payloadFrames) == 1 && p.stopWaiting[pth.pathID] != nil {
+		//utils.Infof("len(payloadFrames) == 1 && p.stopWaiting[pth.pathID] != nil")
+
+		return false, nil
+	}
+	p.stopWaiting[pth.pathID] = nil
+	p.ackFrame[pth.pathID] = nil
+
+	pth.sess.scheduler.queueFrames(payloadFrames, pth)
+
+	return true, nil
+}
+
+// PackPacket packs a new packet
+// the other controlFrames are sent in the next packet, but might be queued and sent in the next packet if the packet would overflow MaxPacketSize otherwise
+func (p *packetPacker) PackPacketWithStoreFrames(pth *path) (*packedPacket, error) {
+
+	if p.streamFramer.HasCryptoStreamFrame() {
+		utils.Debugf("ytxing: HasCryptoStreamFrame")
+		return p.packCryptoPacket(pth) //ytxing if stream 1 has packets
+	}
+
+	encLevel, sealer := p.cryptoSetup.GetSealer()
+
+	publicHeader := p.getPublicHeader(encLevel, pth)
+	publicHeaderLength, err := publicHeader.GetLength(p.perspective) //ytxing: max headerlen = 20
+	if err != nil {
+		return nil, err
+	}
+	p.stopWaiting[pth.pathID] = nil //ytxing: test seems to be good?
+	if p.stopWaiting[pth.pathID] != nil {
+		p.stopWaiting[pth.pathID].PacketNumber = publicHeader.PacketNumber
+		p.stopWaiting[pth.pathID].PacketNumberLen = publicHeader.PacketNumberLen
+	}
+
+	// TODO (QDC): rework this part with PING
+	// ytxing: maybe ignore this ping part?
+	var isPing bool
+	if len(p.controlFrames) > 0 {
+		_, isPing = p.controlFrames[0].(*wire.PingFrame)
+	}
+
+	var payloadFrames []wire.Frame
+	if isPing {
+		payloadFrames = []wire.Frame{p.controlFrames[0]}
+		// Remove the ping frame from the control frames
+		p.controlFrames = p.controlFrames[1:len(p.controlFrames)]
+	} else {
+		maxSize := protocol.MaxPacketSize - protocol.ByteCount(sealer.Overhead()) - publicHeaderLength //1318
+		utils.Debugf("maxSize%d", maxSize)
+		// payloadFrames, err = p.composeNextPacket(maxSize, p.canSendData(encLevel), pth) //ytxing: HERE!!!!!!!!!
+		payloadFrames = pth.sess.scheduler.dequeueStoredFrames(pth)
+		if payloadFrames == nil {
+			return nil, nil
+		}
+	}
+
+	// Check if we have enough frames to send
+	if len(payloadFrames) == 0 {
+		return nil, nil
+	}
+	// Don't send out packets that only contain a StopWaitingFrame
+	if len(payloadFrames) == 1 && p.stopWaiting[pth.pathID] != nil {
+		return nil, nil
+	}
+	p.stopWaiting[pth.pathID] = nil
+	p.ackFrame[pth.pathID] = nil
+
+	raw, err := p.writeAndSealPacket(publicHeader, payloadFrames, sealer, pth)
+	if err != nil {
+		return nil, err
+	}
+	return &packedPacket{
+		number:          publicHeader.PacketNumber,
+		raw:             raw,
+		frames:          payloadFrames,
+		encryptionLevel: encLevel,
+	}, nil
+}
+
 // PackPacket packs a new packet
 // the other controlFrames are sent in the next packet, but might be queued and sent in the next packet if the packet would overflow MaxPacketSize otherwise
 func (p *packetPacker) PackPacket(pth *path) (*packedPacket, error) {
@@ -132,10 +262,11 @@ func (p *packetPacker) PackPacket(pth *path) (*packedPacket, error) {
 	encLevel, sealer := p.cryptoSetup.GetSealer()
 
 	publicHeader := p.getPublicHeader(encLevel, pth)
-	publicHeaderLength, err := publicHeader.GetLength(p.perspective)
+	publicHeaderLength, err := publicHeader.GetLength(p.perspective) //ytxing: max headerlen = 20
 	if err != nil {
 		return nil, err
 	}
+	p.stopWaiting[pth.pathID] = nil //ytxing: test seems to be good?
 	if p.stopWaiting[pth.pathID] != nil {
 		p.stopWaiting[pth.pathID].PacketNumber = publicHeader.PacketNumber
 		p.stopWaiting[pth.pathID].PacketNumberLen = publicHeader.PacketNumberLen
