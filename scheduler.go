@@ -1347,7 +1347,7 @@ func (sch *scheduler) sendPacket(s *session) error {
 		s.pathsLock.RUnlock()
 
 		// zzh: debug
-		s.pathsLock.RUnlock()
+		// s.pathsLock.RUnlock()
 		if pth != nil {
 			utils.Debugf("ytxing: send on path %v", pth.pathID)
 		} else {
