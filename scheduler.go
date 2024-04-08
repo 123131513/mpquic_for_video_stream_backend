@@ -1586,7 +1586,8 @@ pathLoop:
 		return nil
 	}
 
-	if lowerArrivalTime >= deadline {
+	if lowerArrivalTime >= time.Duration(deadline) {
+		//fmt.Println(lowerArrivalTime, deadline)
 		utils.Debugf("ytxing: The deadline has been exceeded\n")
 		s.exceed_deadline.Set(true)
 	} else {
