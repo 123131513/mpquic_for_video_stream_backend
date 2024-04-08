@@ -23,6 +23,9 @@ import (
 const banditAlpha = 0.75
 const banditDimension = 6
 
+// zzh: add deadline for packet
+const deadline = 300
+
 // zzh: begin from ytxing's code
 // PacketList ytxing
 type PacketList struct {
@@ -1582,6 +1585,14 @@ pathLoop:
 		utils.Debugf("ytxing: All paths are cwnd limited, block scheduling, return nil\n")
 		return nil
 	}
+
+	if lowerArrivalTime >= deadline {
+		utils.Debugf("ytxing: The deadline has been exceeded\n")
+		s.exceed_deadline.Set(true)
+	} else {
+		utils.Debugf("ytxing: The deadline has not been exceeded\n")
+		s.exceed_deadline.Set(false)
+	}
 	return selectedPath //zy changes
 	/*
 		 zy already return
@@ -1741,6 +1752,7 @@ func (sch *scheduler) performPacketSendingOfMine(s *session, windowUpdateFrames 
 	if pth.SendingAllowed() && sch.sendingQueueEmpty(pth) { //normally
 		// packet, err = s.packer.PackPacket(s, pth)
 		packet, err = s.packer.PackPacket(pth) // zzh: don't need session, because we only have path not stream
+		s.exceed_deadline.Set(false)
 		utils.Debugf("ytxing: PackPacket()")
 		if err != nil || packet == nil {
 			return nil, false, err
@@ -1755,6 +1767,7 @@ func (sch *scheduler) performPacketSendingOfMine(s *session, windowUpdateFrames 
 		}
 	} else {
 		packet, err = s.packer.PackPacketWithStoreFrames(pth)
+		s.exceed_deadline.Set(false)
 		utils.Debugf("ytxing: PackPacketWithStoreFrames() path %v", pth.pathID)
 		if err != nil || packet == nil {
 			return nil, false, err

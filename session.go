@@ -124,6 +124,8 @@ type session struct {
 	pathManagerLaunched bool
 
 	scheduler *scheduler
+	// zzh: for the scheduler deadline
+	exceed_deadline utils.AtomicBool
 }
 
 var _ Session = &session{}
