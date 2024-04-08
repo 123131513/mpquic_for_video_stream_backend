@@ -24,7 +24,7 @@ const banditAlpha = 0.75
 const banditDimension = 6
 
 // zzh: add deadline for packet
-const deadline = 300
+const deadline = 300 * time.Millisecond
 
 // zzh: begin from ytxing's code
 // PacketList ytxing
