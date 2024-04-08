@@ -964,6 +964,6 @@ func (s *session) GetVersion() protocol.VersionNumber {
 	return s.version
 }
 
-func (s *session) Getdeadlinestatus() (bool, error) {
-	return s.exceed_deadline.Get(), nil
+func (s *session) Getdeadlinestatus() bool {
+	return s.exceed_deadline.Get()
 }
