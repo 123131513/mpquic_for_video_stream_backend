@@ -1363,6 +1363,14 @@ func (sch *scheduler) sendPacket(s *session) error {
 		arriveTime, ok := sch.calculateArrivalTimefromsendbuffer(s, pthtoarrive, false)
 		if ok {
 			fmt.Println("ytxing: arriveTime: ", arriveTime)
+			if arriveTime >= time.Duration(deadline) {
+				fmt.Println(arriveTime, deadline)
+				utils.Debugf("ytxing: The deadline has been exceeded\n")
+				s.exceed_deadline.Set(true)
+			} else {
+				utils.Debugf("ytxing: The deadline has not been exceeded\n")
+				s.exceed_deadline.Set(false)
+			}
 			utils.Debugf("ytxing: arriveTime: %v", arriveTime)
 		} else {
 			utils.Debugf("ytxing: arriveTime: nil")
@@ -1536,7 +1544,7 @@ func (sch *scheduler) mySelectPathByArrivalTime(s *session, hasRetransmission bo
 	var lowerArrivalTime time.Duration
 	selectedPathID := protocol.PathID(255)
 	// zzh: use all paths
-	var allCwndLimited bool = false
+	var allCwndLimited bool = true
 
 	//find the best path, including that is limited by SendingAllowed()
 pathLoop:
@@ -1599,14 +1607,6 @@ pathLoop:
 
 	s.scheduler.previoussendtime = lowerArrivalTime
 
-	if lowerArrivalTime >= time.Duration(deadline) {
-		//fmt.Println(lowerArrivalTime, deadline)
-		utils.Debugf("ytxing: The deadline has been exceeded\n")
-		s.exceed_deadline.Set(true)
-	} else {
-		utils.Debugf("ytxing: The deadline has not been exceeded\n")
-		s.exceed_deadline.Set(false)
-	}
 	return selectedPath //zy changes
 	/*
 		 zy already return
@@ -1840,6 +1840,10 @@ func (sch *scheduler) performPacketSendingOfMine(s *session, windowUpdateFrames 
 }
 
 func (sch *scheduler) calculateArrivalTimefromsendbuffer(sess *session, pth *path, addMeanDeviation bool) (arrivalTime time.Duration, ok bool) {
+	if pth == nil {
+		ok = false
+		return
+	}
 	fn := func(s *stream) (bool, error) {
 		packetSize := protocol.MaxPacketSize * 8               //bit uint64
 		pthBwd := congestion.Bandwidth(pth.GetPathBandwidth()) // bit per second uint64
@@ -1879,7 +1883,7 @@ func (sch *scheduler) calculateArrivalTimefromsendbuffer(sess *session, pth *pat
 		}
 
 		arrivalTime1 := (uint64(packetSize+writeQueueSize)*inSecond)/uint64(pthBwd) + uint64(rtt)/2 + uint64(sch.previoussendtime) //in nanosecond
-		if time.Duration(arrivalTime1) < arrivalTime {
+		if time.Duration(arrivalTime1) > arrivalTime || arrivalTime == 0 {
 			arrivalTime = time.Duration(arrivalTime1)
 		}
 		ok = true
