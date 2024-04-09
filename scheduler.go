@@ -99,6 +99,7 @@ type scheduler struct {
 	packetsNotSentYet map[protocol.PathID]*PacketList       //ytxing
 	previousPath      map[protocol.StreamID]protocol.PathID //ytxing: used to calculate arrival time
 	previoussendtime  time.Duration                         //ytxing: used to calculate arrival time
+	pthtoarrive       *path
 }
 
 type queuePathIdItem struct {
@@ -1319,7 +1320,6 @@ func (sch *scheduler) ackRemainingPaths(s *session, totalWindowUpdateFrames []*w
 
 func (sch *scheduler) sendPacket(s *session) error {
 	var pth *path
-	var pthtoarrive *path
 
 	// Update leastUnacked value of paths
 	s.pathsLock.RLock()
@@ -1354,13 +1354,13 @@ func (sch *scheduler) sendPacket(s *session) error {
 		// zzh: debug
 		// s.pathsLock.RUnlock()
 		if pth != nil {
-			pthtoarrive = pth
+			sch.pthtoarrive = pth
 			utils.Debugf("ytxing: send on path %v", pth.pathID)
 		} else {
 			utils.Debugf("ytxing: path nil!")
 		}
 
-		arriveTime, ok := sch.calculateArrivalTimefromsendbuffer(s, pthtoarrive, false)
+		arriveTime, ok := sch.calculateArrivalTimefromsendbuffer(s, sch.pthtoarrive, false)
 		if ok {
 			fmt.Println("ytxing: arriveTime: ", arriveTime)
 			if arriveTime >= time.Duration(deadline) {

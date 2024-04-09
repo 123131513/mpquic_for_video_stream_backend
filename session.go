@@ -964,6 +964,11 @@ func (s *session) GetVersion() protocol.VersionNumber {
 	return s.version
 }
 
-func (s *session) Getdeadlinestatus() bool {
-	return s.exceed_deadline.Get()
+func (s *session) Getdeadlinestatus() time.Duration {
+	arriveTime, ok := s.scheduler.calculateArrivalTimefromsendbuffer(s, s.scheduler.pthtoarrive, false)
+	if ok {
+		return arriveTime
+	} else {
+		return 0
+	}
 }
