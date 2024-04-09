@@ -98,6 +98,7 @@ type scheduler struct {
 	// zzh: add buffer for packets
 	packetsNotSentYet map[protocol.PathID]*PacketList       //ytxing
 	previousPath      map[protocol.StreamID]protocol.PathID //ytxing: used to calculate arrival time
+	previoussendtime  time.Duration                         //ytxing: used to calculate arrival time
 }
 
 type queuePathIdItem struct {
@@ -1318,6 +1319,7 @@ func (sch *scheduler) ackRemainingPaths(s *session, totalWindowUpdateFrames []*w
 
 func (sch *scheduler) sendPacket(s *session) error {
 	var pth *path
+	var pthtoarrive *path
 
 	// Update leastUnacked value of paths
 	s.pathsLock.RLock()
@@ -1352,9 +1354,18 @@ func (sch *scheduler) sendPacket(s *session) error {
 		// zzh: debug
 		// s.pathsLock.RUnlock()
 		if pth != nil {
+			pthtoarrive = pth
 			utils.Debugf("ytxing: send on path %v", pth.pathID)
 		} else {
 			utils.Debugf("ytxing: path nil!")
+		}
+
+		arriveTime, ok := sch.calculateArrivalTimefromsendbuffer(s, pthtoarrive, false)
+		if ok {
+			fmt.Println("ytxing: arriveTime: ", arriveTime)
+			utils.Debugf("ytxing: arriveTime: %v", arriveTime)
+		} else {
+			utils.Debugf("ytxing: arriveTime: nil")
 		}
 
 		// XXX No more path available, should we have a new QUIC error message?
@@ -1585,6 +1596,8 @@ pathLoop:
 		utils.Debugf("ytxing: All paths are cwnd limited, block scheduling, return nil\n")
 		return nil
 	}
+
+	s.scheduler.previoussendtime = lowerArrivalTime
 
 	if lowerArrivalTime >= time.Duration(deadline) {
 		//fmt.Println(lowerArrivalTime, deadline)
@@ -1824,4 +1837,57 @@ func (sch *scheduler) performPacketSendingOfMine(s *session, windowUpdateFrames 
 
 	utils.Debugf("ytxing: Finally send pkt %v on path %v", pkt.PacketNumber, pth.pathID)
 	return pkt, true, nil
+}
+
+func (sch *scheduler) calculateArrivalTimefromsendbuffer(sess *session, pth *path, addMeanDeviation bool) (arrivalTime time.Duration, ok bool) {
+	fn := func(s *stream) (bool, error) {
+		packetSize := protocol.MaxPacketSize * 8               //bit uint64
+		pthBwd := congestion.Bandwidth(pth.GetPathBandwidth()) // bit per second uint64
+		utils.Debugf("ytxing: GetPathBandwidth() path %v bwd %v mbps", pth.pathID, pthBwd/1e6)
+		inSecond := uint64(time.Second)
+		var rtt time.Duration
+		if addMeanDeviation {
+			rtt = pth.rttStats.SmoothedRTT() + pth.rttStats.MeanDeviation()
+			utils.Debugf("ytxing: addMeanDeviation path %d, rtt = rtt%v + MD%v", pth.pathID, pth.rttStats.SmoothedRTT(), pth.rttStats.MeanDeviation())
+		} else {
+			rtt = pth.rttStats.SmoothedRTT()
+
+		}
+		if pthBwd == 0 {
+			utils.Debugf("ytxing: bandwidth of path %v is nil, arrivalTime == rtt/2 %v \n", pth.pathID, rtt/2)
+			if (rtt / 2) > arrivalTime {
+				arrivalTime = rtt / 2
+				ok = false
+			}
+			return false, nil
+		}
+		if rtt == 0 {
+			utils.Debugf("ytxing: rtt of path%d is nil, arrivalTime == 0\n", pth.pathID)
+			if (rtt) > arrivalTime {
+				arrivalTime = rtt
+				ok = true
+			}
+			return true, nil
+		}
+		writeQueue := s.lenOfDataForWriting()
+		var writeQueueSize protocol.ByteCount
+		if writeQueue == 0 {
+			writeQueueSize = 0
+		} else {
+			writeQueueSize = writeQueue * protocol.DefaultTCPMSS * 8 //in bit
+			//protocol.DefaultTCPMSS MaxPacketSize
+		}
+
+		arrivalTime1 := (uint64(packetSize+writeQueueSize)*inSecond)/uint64(pthBwd) + uint64(rtt)/2 + uint64(sch.previoussendtime) //in nanosecond
+		if time.Duration(arrivalTime1) < arrivalTime {
+			arrivalTime = time.Duration(arrivalTime1)
+		}
+		ok = true
+		utils.Debugf("ytxing: arrivalTime of path %d is %v ms writeQueueSize %v bytes, pthBwd %v byte p s, rtt %v\n", pth.pathID, time.Duration(arrivalTime), writeQueueSize/8, pthBwd/8, rtt)
+		return true, nil
+	}
+
+	sess.streamsMap.RoundRobinIterate(fn)
+
+	return
 }
