@@ -263,7 +263,7 @@ func (p *packetPacker) PackPacket(pth *path) (*packedPacket, error) {
 	encLevel, sealer := p.cryptoSetup.GetSealer()
 
 	publicHeader := p.getPublicHeader(encLevel, pth)
-	publicHeaderLength, err := publicHeader.GetLength(p.perspective) //ytxing: max headerlen = 20
+	publicHeaderLength, err := publicHeader.GetLength(p.perspective) //zzh: max headerlen = 20
 	if err != nil {
 		return nil, err
 	}
