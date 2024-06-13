@@ -965,6 +965,10 @@ func (s *session) GetVersion() protocol.VersionNumber {
 }
 
 func (s *session) Getdeadlinestatus() time.Duration {
+	if s.config.Scheduler != "arrive_time" {
+		return 0
+	}
+
 	arriveTime, ok := s.scheduler.calculateArrivalTimefromsendbuffer(s, s.scheduler.pthtoarrive, false)
 	if ok {
 		return arriveTime
