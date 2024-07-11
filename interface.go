@@ -80,6 +80,16 @@ type Session interface {
 	Context() context.Context
 	// zzh: Get the deadline status
 	Getdeadlinestatus() time.Duration
+
+	// zzh: add interface of datagram
+	// SendDatagram sends a message using a QUIC datagram, as specified in RFC 9221.
+	// There is no delivery guarantee for DATAGRAM frames, they are not retransmitted if lost.
+	// The payload of the datagram needs to fit into a single QUIC packet.
+	// In addition, a datagram may be dropped before being sent out if the available packet size suddenly decreases.
+	// If the payload is too large to be sent at the current time, a DatagramTooLargeError is returned.
+	SendDatagram(payload []byte) error
+	// ReceiveDatagram gets a message received in a datagram, as specified in RFC 9221.
+	ReceiveDatagram(context.Context) ([]byte, error)
 }
 
 // A NonFWSession is a QUIC connection between two peers half-way through the handshake.
