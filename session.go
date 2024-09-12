@@ -126,6 +126,12 @@ type session struct {
 	scheduler *scheduler
 	// zzh: for the scheduler deadline
 	exceed_deadline utils.AtomicBool
+	// zzh: datagram queue
+	datagramQueue *datagramQueue
+	// zzh: datagram max frame size
+	MaxDatagramFrameSize protocol.ByteCount
+	// zzh: add the logger
+	logger utils.Logger
 }
 
 var _ Session = &session{}
@@ -210,6 +216,11 @@ func (s *session) setup(
 		protocol.ByteCount(s.config.MaxReceiveConnectionFlowControlWindow),
 		s.config.IdleTimeout,
 	)
+	// zzh: initialize the datagram configuration
+	if s.config.EnableDatagrams {
+		s.MaxDatagramFrameSize = protocol.MaxDatagramFrameSize
+		s.datagramQueue = newDatagramQueue(s.scheduleSending, s.logger)
+	}
 
 	s.scheduler = &scheduler{
 		SchedulerName:     s.config.Scheduler,
@@ -302,10 +313,13 @@ func (s *session) setup(
 		s.cryptoSetup,
 		s.connectionParameters,
 		s.streamFramer,
+		// zzh: add the datagram queue in packet packer
+		s.datagramQueue,
 		s.perspective,
 		s.version,
 	)
-	s.unpacker = &packetUnpacker{aead: s.cryptoSetup, version: s.version}
+	// zzh: add the datagram support
+	s.unpacker = &packetUnpacker{aead: s.cryptoSetup, version: s.version, supportsDatagrams: s.config.EnableDatagrams}
 
 	return s, handshakeChan, nil
 }
@@ -537,6 +551,9 @@ func (s *session) handleFrames(fs []wire.Frame, p *path) error {
 				err = s.pathManager.handleAddAddressFrame(frame)
 				s.schedulePathsFrame()
 			}
+			// zzh: handle the datagram frame
+		case *wire.DatagramFrame:
+			err = s.handleDatagramFrame(frame)
 		case *wire.ClosePathFrame:
 			s.handleClosePathFrame(frame)
 		case *wire.PathsFrame:
@@ -656,6 +673,16 @@ func (s *session) handleClosePathFrame(frame *wire.ClosePathFrame) error {
 	return pth.sentPacketHandler.ReceivedClosePath(frame, pth.lastRcvdPacketNumber, pth.lastNetworkActivityTime)
 }
 
+// zzh: add the handle datagram frame
+func (s *session) handleDatagramFrame(f *wire.DatagramFrame) error {
+	length, _ := f.MinLength(s.version)
+	if length > protocol.MaxDatagramFrameSize {
+		return errors.New("DATAGRAM frame too large")
+	}
+	s.datagramQueue.HandleDatagramFrame(f)
+	return nil
+}
+
 func (s *session) closePath(pthID protocol.PathID, sendClosePathFrame bool) error {
 	s.pathsLock.RLock()
 	defer s.pathsLock.RUnlock()
@@ -757,6 +784,11 @@ func (s *session) handleCloseError(closeErr closeError) error {
 	}
 
 	s.streamsMap.CloseWithError(quicErr)
+
+	// zzh: add the datagram queue close error
+	if s.datagramQueue != nil {
+		s.datagramQueue.CloseWithError(quicErr)
+	}
 
 	if closeErr.err == errCloseSessionForNewVersion {
 		return nil
@@ -975,4 +1007,20 @@ func (s *session) Getdeadlinestatus() time.Duration {
 	} else {
 		return 0
 	}
+}
+
+// zzh: datagram interface
+func (s *session) SendMessage(p []byte) error {
+	f := &wire.DatagramFrame{DataLenPresent: true}
+	if protocol.ByteCount(len(p)) > f.MaxDataLen(s.MaxDatagramFrameSize, s.version) {
+		return errors.New("message too large")
+	}
+	f.Data = make([]byte, len(p))
+	copy(f.Data, p)
+	s.datagramQueue.AddAndWait(f)
+	return nil
+}
+
+func (s *session) ReceiveMessage() ([]byte, error) {
+	return s.datagramQueue.Receive()
 }

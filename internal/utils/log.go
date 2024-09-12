@@ -13,6 +13,21 @@ type LogLevel uint8
 
 const logEnv = "QUIC_GO_LOG_LEVEL"
 
+// zzh: A Logger logs.
+type Logger interface {
+	SetLogLevel(LogLevel)
+	SetLogTimeFormat(format string)
+	WithPrefix(prefix string) Logger
+	Debug() bool
+
+	Errorf(format string, args ...interface{})
+	Infof(format string, args ...interface{})
+	Debugf(format string, args ...interface{})
+}
+
+// DefaultLogger is used by quic-go for logging.
+var DefaultLogger Logger
+
 const (
 	// LogLevelNothing disables
 	LogLevelNothing LogLevel = iota

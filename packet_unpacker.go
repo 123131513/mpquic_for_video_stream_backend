@@ -22,6 +22,8 @@ type quicAEAD interface {
 type packetUnpacker struct {
 	version protocol.VersionNumber
 	aead    quicAEAD
+	// zzh: add datagram support
+	supportsDatagrams bool
 }
 
 func (u *packetUnpacker) Unpack(publicHeaderBinary []byte, hdr *wire.PublicHeader, data []byte) (*unpackedPacket, error) {
@@ -106,6 +108,12 @@ func (u *packetUnpacker) Unpack(publicHeaderBinary []byte, hdr *wire.PublicHeade
 				frame, err = wire.ParseClosePathFrame(r, u.version)
 			case 0x12:
 				frame, err = wire.ParsePathsFrame(r, u.version)
+			case 0x30, 0x31:
+				if u.supportsDatagrams {
+					frame, err = wire.ParseDatagramFrame(r, u.version)
+					break
+				}
+				fallthrough
 			default:
 				err = qerr.Error(qerr.InvalidFrameData, fmt.Sprintf("unknown type byte 0x%x", typeByte))
 			}

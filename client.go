@@ -202,6 +202,7 @@ func populateClientConfig(config *Config) *Config {
 		CacheHandshake:                        config.CacheHandshake,
 		CreatePaths:                           config.CreatePaths,
 		Scheduler:                             config.Scheduler,
+		EnableDatagrams:                       config.EnableDatagrams, // zzh: Add a flag to enable datagrams.
 	}
 }
 

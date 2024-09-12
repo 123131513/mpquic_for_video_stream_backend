@@ -81,15 +81,13 @@ type Session interface {
 	// zzh: Get the deadline status
 	Getdeadlinestatus() time.Duration
 
-	// zzh: add interface of datagram
-	// SendDatagram sends a message using a QUIC datagram, as specified in RFC 9221.
-	// There is no delivery guarantee for DATAGRAM frames, they are not retransmitted if lost.
-	// The payload of the datagram needs to fit into a single QUIC packet.
-	// In addition, a datagram may be dropped before being sent out if the available packet size suddenly decreases.
-	// If the payload is too large to be sent at the current time, a DatagramTooLargeError is returned.
-	SendDatagram(payload []byte) error
-	// ReceiveDatagram gets a message received in a datagram, as specified in RFC 9221.
-	ReceiveDatagram(context.Context) ([]byte, error)
+	// zzh: add a datagram interface
+	// SendMessage sends a message as a datagram.
+	// See https://datatracker.ietf.org/doc/draft-pauly-quic-datagram/.
+	SendMessage([]byte) error
+	// ReceiveMessage gets a message received in a datagram.
+	// See https://datatracker.ietf.org/doc/draft-pauly-quic-datagram/.
+	ReceiveMessage() ([]byte, error)
 }
 
 // A NonFWSession is a QUIC connection between two peers half-way through the handshake.
@@ -143,6 +141,10 @@ type Config struct {
 	Epsilon           float64
 	AllowedCongestion int
 	DumpExperiences   bool
+	// zzh: Add a flag to enable datagrams.
+	// See https://datatracker.ietf.org/doc/draft-ietf-quic-datagram/.
+	// Datagrams will only be available when both peers enable datagram support.
+	EnableDatagrams bool
 }
 
 // A Listener for incoming QUIC connections

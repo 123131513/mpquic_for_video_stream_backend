@@ -191,3 +191,8 @@ const (
 	// Network changed, but connection had one or more non-migratable streams.
 	ConnectionMigrationNonMigratableStream ErrorCode = 84
 )
+
+// zzh: add ErrorCode for the crypto handshake message resulted in a stateless reject.
+func (e ErrorCode) isCryptoError() bool {
+	return e >= 0x100 && e < 0x200
+}

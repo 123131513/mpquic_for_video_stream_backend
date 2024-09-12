@@ -213,6 +213,7 @@ func populateServerConfig(config *Config) *Config {
 		Epsilon:                               config.Epsilon,
 		AllowedCongestion:                     config.AllowedCongestion,
 		DumpExperiences:                       config.DumpExperiences,
+		EnableDatagrams:                       config.EnableDatagrams, // zzh: Add a flag to enable datagrams.
 	}
 }
 

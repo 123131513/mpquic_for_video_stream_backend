@@ -128,3 +128,19 @@ const ClosedSessionDeleteTimeout = time.Minute
 
 // NumCachedCertificates is the number of cached compressed certificate chains, each taking ~1K space
 const NumCachedCertificates = 128
+
+//zzh: Datagram parameters
+// MaxDatagramFrameSize is the maximum size of a DATAGRAM frame as defined in
+// https://datatracker.ietf.org/doc/draft-pauly-quic-datagram/.
+// The size is chosen such that a DATAGRAM frame fits into a QUIC packet.
+const MaxDatagramFrameSize ByteCount = 1220
+
+// DatagramRcvQueueLen is the length of the receive queue for DATAGRAM frames.
+// See https://datatracker.ietf.org/doc/draft-pauly-quic-datagram/.
+const DatagramRcvQueueLen = 128
+
+// InitialPacketSizeIPv4 is the maximum packet size that we use for sending IPv4 packets.
+const InitialPacketSizeIPv4 = 1252
+
+// MaxCongestionWindowPackets is the maximum congestion window in packet.
+const MaxCongestionWindowPackets = 10000

@@ -27,6 +27,8 @@ func (p *Packet) GetFramesForRetransmission() []wire.Frame {
 			continue
 		case *wire.StopWaitingFrame:
 			continue
+		case *wire.DatagramFrame:
+			continue
 		}
 		fs = append(fs, frame)
 	}

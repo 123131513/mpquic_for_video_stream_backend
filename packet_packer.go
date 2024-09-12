@@ -28,6 +28,9 @@ type packetPacker struct {
 	connectionParameters handshake.ConnectionParametersManager
 	streamFramer         *streamFramer
 
+	// zzh: add datagramQueue
+	datagramQueue *datagramQueue
+
 	controlFrames []wire.Frame
 	stopWaiting   map[protocol.PathID]*wire.StopWaitingFrame
 	ackFrame      map[protocol.PathID]*wire.AckFrame
@@ -37,6 +40,8 @@ func newPacketPacker(connectionID protocol.ConnectionID,
 	cryptoSetup handshake.CryptoSetup,
 	connectionParameters handshake.ConnectionParametersManager,
 	streamFramer *streamFramer,
+	// zzh: add datagramQueue
+	datagramQueue *datagramQueue,
 	perspective protocol.Perspective,
 	version protocol.VersionNumber,
 ) *packetPacker {
@@ -44,6 +49,7 @@ func newPacketPacker(connectionID protocol.ConnectionID,
 		cryptoSetup:          cryptoSetup,
 		connectionID:         connectionID,
 		connectionParameters: connectionParameters,
+		datagramQueue:        datagramQueue, //zzh: add datagramQueue
 		perspective:          perspective,
 		version:              version,
 		streamFramer:         streamFramer,
@@ -344,6 +350,21 @@ func (p *packetPacker) composeNextPacket(
 	var payloadLength protocol.ByteCount
 	var payloadFrames []wire.Frame
 
+	// zzh: add pack for datagram
+	// TODO: add path for datagram
+	var hasDatagram bool
+	if p.datagramQueue != nil {
+		if datagram := p.datagramQueue.Get(); datagram != nil {
+			datagramLen, _ := datagram.MinLength(p.version)
+			if payloadLength+datagramLen <= maxFrameSize {
+				// TODO: Wrap the datagram in a frame and set OnLost to a no-op to avoid retransmission
+				payloadFrames = append(payloadFrames, datagram)
+				payloadLength += datagramLen
+				hasDatagram = true
+			}
+		}
+	}
+
 	// STOP_WAITING and ACK will always fit
 	if p.stopWaiting[pth.pathID] != nil {
 		payloadFrames = append(payloadFrames, p.stopWaiting[pth.pathID])
@@ -353,7 +374,8 @@ func (p *packetPacker) composeNextPacket(
 		}
 		payloadLength += l
 	}
-	if p.ackFrame[pth.pathID] != nil {
+	// zzh: TODO: make sure ACKs are sent when a lot of DATAGRAMs are queued
+	if p.ackFrame[pth.pathID] != nil && !hasDatagram {
 		payloadFrames = append(payloadFrames, p.ackFrame[pth.pathID])
 		l, err := p.ackFrame[pth.pathID].MinLength(p.version)
 		if err != nil {

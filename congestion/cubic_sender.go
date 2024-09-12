@@ -11,6 +11,13 @@ const (
 	maxBurstBytes                                        = 3 * protocol.DefaultTCPMSS
 	defaultMinimumCongestionWindow protocol.PacketNumber = 2
 	renoBeta                       float32               = 0.7 // Reno backoff factor.
+
+	// zzh: add  Datagram Congestion Control Protocol (DCCP) parameters
+	// maxDatagramSize is the default maximum packet size used in the Linux TCP implementation.
+	// Used in QUIC for congestion window computations in bytes.
+	initialMaxDatagramSize     = protocol.ByteCount(protocol.InitialPacketSizeIPv4)
+	initialMaxCongestionWindow = protocol.MaxCongestionWindowPackets * initialMaxDatagramSize
+	initialCongestionWindow    = 32 * initialMaxDatagramSize
 )
 
 type cubicSender struct {
@@ -58,6 +65,9 @@ type cubicSender struct {
 
 	initialCongestionWindow    protocol.PacketNumber
 	initialMaxCongestionWindow protocol.PacketNumber
+
+	// zzh: add datagram congestion control parameters
+	maxDatagramSize protocol.ByteCount
 }
 
 // NewCubicSender makes a new cubic sender
@@ -73,6 +83,7 @@ func NewCubicSender(clock Clock, rttStats *RTTStats, reno bool, initialCongestio
 		numConnections:             defaultNumConnections,
 		cubic:                      NewCubic(clock),
 		reno:                       reno,
+		maxDatagramSize:            initialMaxDatagramSize, // zzh: add datagram congestion control parameters
 	}
 }
 
@@ -85,6 +96,19 @@ func (c *cubicSender) TimeUntilSend(now time.Time, bytesInFlight protocol.ByteCo
 		return 0
 	}
 	return utils.InfDuration
+}
+
+// zzh: add datagram congestion control functions
+// func (c *cubicSender) HasPacingBudget() bool {
+// 	return c.pacer.Budget(c.clock.Now()) >= c.maxDatagramSize
+// }
+
+func (c *cubicSender) maxCongestionWindow() protocol.ByteCount {
+	return c.maxDatagramSize * protocol.MaxCongestionWindowPackets
+}
+
+func (c *cubicSender) getMinCongestionWindow() protocol.ByteCount {
+	return c.maxDatagramSize * protocol.ByteCount(defaultMinimumCongestionWindow)
 }
 
 func (c *cubicSender) OnPacketSent(sentTime time.Time, bytesInFlight protocol.ByteCount, packetNumber protocol.PacketNumber, bytes protocol.ByteCount, isRetransmittable bool) bool {
