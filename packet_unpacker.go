@@ -66,7 +66,7 @@ func (u *packetUnpacker) Unpack(publicHeaderBinary []byte, hdr *wire.PublicHeade
 			if err != nil {
 				err = qerr.Error(qerr.InvalidAckData, err.Error())
 			}
-		} else if typeByte&0xe0 == 0x20 {
+		} else if typeByte&0xf0 == 0x20 {
 			err = errors.New("unimplemented: CONGESTION_FEEDBACK")
 		} else {
 			switch typeByte {
